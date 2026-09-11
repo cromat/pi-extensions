@@ -40,7 +40,7 @@ test("registration inherits the models.json API key when no environment key is s
 		delete process.env.PI_OFFLINE;
 		globalThis.fetch = async (input) => {
 			requestedUrls.push(String(input));
-			return new Response(JSON.stringify({ data: [{ id: "discovered-model" }] }), {
+			return new Response(JSON.stringify({ data: [{ id: "discovered-model:free" }] }), {
 				status: 200,
 				headers: { "content-type": "application/json" },
 			});
@@ -58,7 +58,7 @@ test("registration inherits the models.json API key when no environment key is s
 		assert.equal(providerConfig?.apiKey, "$TEST_9ROUTER_KEY");
 		assert.equal(providerConfig?.baseUrl, "http://config.example/v1");
 		assert.deepEqual(requestedUrls, ["http://config.example/v1/models"]);
-		assert.equal(providerConfig?.models?.[0]?.id, "discovered-model");
+		assert.equal(providerConfig?.models?.[0]?.id, "discovered-model:free");
 	} finally {
 		if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
@@ -92,7 +92,7 @@ test("environment base URL overrides models.json for discovery and refresh", asy
 		delete process.env.PI_OFFLINE;
 		globalThis.fetch = async (input) => {
 			requestedUrls.push(String(input));
-			const id = requestedUrls.length === 1 ? "startup-model" : "refreshed-model";
+			const id = requestedUrls.length === 1 ? "startup-model:free" : "refreshed-model:free";
 			return new Response(JSON.stringify({ data: [{ id }] }), {
 				status: 200,
 				headers: { "content-type": "application/json" },
@@ -115,7 +115,7 @@ test("environment base URL overrides models.json for discovery and refresh", asy
 			publish: async () => true,
 			signal: new AbortController().signal,
 		});
-		assert.equal(refreshed[0]?.id, "refreshed-model");
+		assert.equal(refreshed[0]?.id, "refreshed-model:free");
 		assert.deepEqual(requestedUrls, [
 			"http://environment.example/v1/models",
 			"http://environment.example/v1/models",
@@ -136,7 +136,7 @@ test("normalizeModels maps capabilities and removes invalid duplicates", () => {
 	const models = normalizeModels({
 		data: [
 			{
-				id: "alpha",
+				id: "alpha:free",
 				context_length: 256000,
 				max_completion_tokens: 8192,
 				capabilities: {
@@ -146,8 +146,8 @@ test("normalizeModels maps capabilities and removes invalid duplicates", () => {
 					thinkingCanDisable: false,
 				},
 			},
-			{ id: "alpha", capabilities: { reasoning: false } },
-			{ id: "  beta  " },
+			{ id: "alpha:free", capabilities: { reasoning: false } },
+			{ id: "  beta:free  " },
 			{ id: "" },
 			{ id: null },
 		],
@@ -155,8 +155,8 @@ test("normalizeModels maps capabilities and removes invalid duplicates", () => {
 
 	assert.equal(models.length, 2);
 	assert.deepEqual(models[0], {
-		id: "alpha",
-		name: "alpha",
+		id: "alpha:free",
+		name: "alpha:free",
 		reasoning: true,
 		thinkingLevelMap: { off: null },
 		input: ["text", "image"],
@@ -165,7 +165,7 @@ test("normalizeModels maps capabilities and removes invalid duplicates", () => {
 		maxTokens: 8192,
 		compat: { thinkingFormat: "zai" },
 	});
-	assert.equal(models[1].id, "beta");
+	assert.equal(models[1].id, "beta:free");
 	assert.equal(models[1].contextWindow, 128000);
 	assert.equal(models[1].maxTokens, 16384);
 });
@@ -435,7 +435,7 @@ test("fallback discovery gives refreshed models an explicit URL without overridi
 				providers: {
 					"9router": {
 						apiKey: "config-key",
-						models: [{ id: "configured-model", baseUrl: "http://model.example/v1" }],
+						models: [{ id: "configured-model:free", baseUrl: "http://model.example/v1" }],
 					},
 				},
 			}),
@@ -448,7 +448,7 @@ test("fallback discovery gives refreshed models an explicit URL without overridi
 			requestedUrls.push(String(input));
 			if (requestedUrls.length === 1) return new Response("unavailable", { status: 503 });
 			return new Response(
-				JSON.stringify({ data: [{ id: "configured-model" }, { id: "new-model" }] }),
+				JSON.stringify({ data: [{ id: "configured-model:free" }, { id: "new-model:free" }] }),
 				{ status: 200 },
 			);
 		};
@@ -637,7 +637,7 @@ test("discovered models inherit provider compat without replacing model compat",
 		globalThis.fetch = async () =>
 			new Response(
 				JSON.stringify({
-					data: [{ id: "discovered-model", capabilities: { thinkingFormat: "zai", reasoning: true } }],
+					data: [{ id: "discovered-model:free", capabilities: { thinkingFormat: "zai", reasoning: true } }],
 				}),
 				{ status: 200 },
 			);
@@ -661,6 +661,86 @@ test("discovered models inherit provider compat without replacing model compat",
 		else process.env.PI_9ROUTER_BASE_URL = originalBaseUrl;
 		if (originalOffline === undefined) delete process.env.PI_OFFLINE;
 		else process.env.PI_OFFLINE = originalOffline;
+		globalThis.fetch = originalFetch;
+		await rm(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("normalizeModels filters free-only when enabled", () => {
+	const models = normalizeModels(
+		{
+			data: [
+				{ id: "free-model:free" },
+				{ id: "paid-model" },
+				{ id: "no-suffix-model" },
+			],
+		},
+		{ freeOnly: true },
+	);
+	assert.equal(models.length, 1);
+	assert.equal(models[0].id, "free-model:free");
+});
+
+test("normalizeModels includes all models when freeOnly is disabled", () => {
+	const models = normalizeModels(
+		{
+			data: [
+				{ id: "free-model:free" },
+				{ id: "paid-model" },
+				{ id: "no-suffix-model" },
+			],
+		},
+		{ freeOnly: false },
+	);
+	assert.equal(models.length, 3);
+});
+
+test("normalizeModels defaults to freeOnly=true", () => {
+	const models = normalizeModels({
+		data: [
+			{ id: "free-model:free" },
+			{ id: "paid-model" },
+		],
+	});
+	assert.equal(models.length, 1);
+	assert.equal(models[0].id, "free-model:free");
+});
+
+test("discovery respects PI_9ROUTER_FREE_ONLY=0 to include paid models", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "9router-pi-test-"));
+	const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const originalFreeOnly = process.env.PI_9ROUTER_FREE_ONLY;
+	const originalFetch = globalThis.fetch;
+	let providerConfig: Parameters<ExtensionAPI["registerProvider"]>[1] | undefined;
+
+	try {
+		process.env.PI_CODING_AGENT_DIR = agentDir;
+		process.env.PI_9ROUTER_FREE_ONLY = "0";
+		delete process.env.PI_OFFLINE;
+		globalThis.fetch = async () =>
+			new Response(
+				JSON.stringify({
+					data: [{ id: "free-model:free" }, { id: "paid-model" }],
+				}),
+				{ status: 200 },
+			);
+
+		const pi = {
+			registerCommand() {},
+			registerProvider(_providerId: string, config: Parameters<ExtensionAPI["registerProvider"]>[1]) {
+				providerConfig = config;
+			},
+		} as unknown as ExtensionAPI;
+
+		await nineRouterPi(pi);
+		assert.equal(providerConfig?.models?.length, 2);
+		assert.equal(providerConfig?.models?.[0].id, "free-model:free");
+		assert.equal(providerConfig?.models?.[1].id, "paid-model");
+	} finally {
+		if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+		if (originalFreeOnly === undefined) delete process.env.PI_9ROUTER_FREE_ONLY;
+		else process.env.PI_9ROUTER_FREE_ONLY = originalFreeOnly;
 		globalThis.fetch = originalFetch;
 		await rm(agentDir, { recursive: true, force: true });
 	}
@@ -714,7 +794,7 @@ test("superseded refresh cannot overwrite a later cache-only catalog", async () 
 		});
 		assert.equal(cached[0]?.id, "cached-model");
 
-		resolveFetch?.(new Response(JSON.stringify({ data: [{ id: "late-model" }] }), { status: 200 }));
+		resolveFetch?.(new Response(JSON.stringify({ data: [{ id: "late-model:free" }] }), { status: 200 }));
 		const rejected = await lateRefresh;
 		assert.equal(rejected[0]?.id, "prior-model");
 

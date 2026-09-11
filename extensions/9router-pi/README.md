@@ -39,6 +39,7 @@ Optional environment variables:
 
 - `PI_9ROUTER_BASE_URL` — overrides the `models.json` gateway URL and default.
 - `NINE_ROUTER_API_KEY` — supplies the request key and overrides the `models.json` key when set.
+- `PI_9ROUTER_FREE_ONLY` — when set (default: `true`), only models marked as free by the 9router gateway are exposed. Set to `0` or `false` to include paid models as well.
 
 ## Install from this repository
 

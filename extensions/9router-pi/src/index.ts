@@ -54,6 +54,10 @@ export type RouterPiModel = {
 	compat?: ProviderModelConfig["compat"];
 };
 
+function isFreeModel(id: string): boolean {
+	return id.endsWith(":free");
+}
+
 function positiveNumber(value: unknown, fallback: number): number {
 	return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
 }
@@ -74,7 +78,11 @@ function hasModelId(model: RouterModelInfo): model is RouterModelInfo & { id: st
 	return typeof model.id === "string" && model.id.trim().length > 0;
 }
 
-export function normalizeModels(payload: RouterModelsResponse): RouterPiModel[] {
+export function normalizeModels(
+	payload: RouterModelsResponse,
+	options?: { freeOnly?: boolean },
+): RouterPiModel[] {
+	const freeOnly = options?.freeOnly ?? true;
 	const seen = new Set<string>();
 	const models: RouterPiModel[] = [];
 
@@ -83,6 +91,8 @@ export function normalizeModels(payload: RouterModelsResponse): RouterPiModel[] 
 		const id = model.id.trim();
 		if (seen.has(id)) continue;
 		seen.add(id);
+
+		if (freeOnly && !isFreeModel(id)) continue;
 
 		const capabilities = model.capabilities;
 		const reasoning = capabilities?.reasoning === true;
@@ -119,8 +129,14 @@ async function fetchPayload(baseUrl: string, signal?: AbortSignal): Promise<Rout
 		signal?.addEventListener("abort", abortFromParent, { once: true });
 	}
 
+	const apiKey = configuredApiKey();
+	const headers: Record<string, string> = {};
+	if (apiKey) {
+		headers["Authorization"] = `Bearer ${apiKey}`;
+	}
+
 	try {
-		const response = await fetch(`${baseUrl}/models`, { signal: controller.signal });
+		const response = await fetch(`${baseUrl}/models`, { signal: controller.signal, headers });
 		if (!response.ok) {
 			throw new Error(`9router model discovery failed: HTTP ${response.status}`);
 		}
@@ -134,8 +150,10 @@ async function fetchPayload(baseUrl: string, signal?: AbortSignal): Promise<Rout
 export async function discoverModels(
 	baseUrl = configuredBaseUrl(),
 	signal?: AbortSignal,
+	options?: { freeOnly?: boolean },
 ): Promise<RouterPiModel[]> {
-	const models = normalizeModels(await fetchPayload(normalizeBaseUrl(baseUrl), signal));
+	const freeOnly = options?.freeOnly ?? configuredFreeOnly();
+	const models = normalizeModels(await fetchPayload(normalizeBaseUrl(baseUrl), signal), { freeOnly });
 	if (models.length === 0) {
 		throw new Error("9router model discovery returned no models");
 	}
@@ -325,6 +343,12 @@ function configuredApiKey(): string | undefined {
 	return apiKeyFromEnvironment() ?? apiKeyFromModelsJson();
 }
 
+function configuredFreeOnly(): boolean {
+	const value = process.env.PI_9ROUTER_FREE_ONLY;
+	if (value === undefined) return true;
+	return value !== "0" && value !== "false" && value !== "";
+}
+
 type ExtensionState = {
 	registeredModels: ProviderModelConfig[];
 	registeredBaseUrl: string;
@@ -438,7 +462,7 @@ function registerFallbackProvider(pi: ExtensionAPI, state: ExtensionState): void
 
 async function discoverAndRegister(pi: ExtensionAPI, state: ExtensionState): Promise<RouterPiModel[]> {
 	const baseUrl = configuredBaseUrl();
-	const models = await discoverModels(baseUrl);
+	const models = await discoverModels(baseUrl, undefined, { freeOnly: configuredFreeOnly() });
 	const registeredModels = applyProviderCompat(models);
 	registerDynamicProvider(pi, baseUrl, registeredModels, state);
 	return registeredModels;
