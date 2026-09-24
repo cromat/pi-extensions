@@ -17,7 +17,6 @@ import {
   type Model,
   type ModelThinkingLevel,
   type SimpleStreamOptions,
-  type TextContent,
   type ThinkingLevelMap,
   type Tool,
   type ToolCall,
@@ -540,14 +539,27 @@ function setEstimatedUsage(
   calculateCost(model, output.usage);
 }
 
-function contentToText(
-  content: string | (TextContent | ImageContent)[],
-): string {
-  if (typeof content === "string") return content;
-  return content
-    .map((item) => {
-      if (item.type === "text") return item.text;
-      return `[image in conversation: ${item.mimeType}, ${item.data.length} base64 chars]`;
+// Conversation history may contain malformed content despite Pi's static types.
+function normalizeContent(content: unknown): unknown[] {
+  if (Array.isArray(content)) return content;
+  if (typeof content === "string") return [{ type: "text", text: content }];
+  return [];
+}
+
+function contentToText(content: unknown): string {
+  return normalizeContent(content)
+    .flatMap((item) => {
+      if (!item || typeof item !== "object") return [];
+      if (
+        "type" in item && item.type === "text" &&
+        "text" in item && typeof item.text === "string"
+      ) return [item.text];
+      if (
+        "type" in item && item.type === "image" &&
+        "mimeType" in item && typeof item.mimeType === "string" &&
+        "data" in item && typeof item.data === "string"
+      ) return [`[image in conversation: ${item.mimeType}, ${item.data.length} base64 chars]`];
+      return [];
     })
     .join("\n");
 }
@@ -561,9 +573,13 @@ export function imageContentsForModel(
   const images: ImageContent[] = [];
   for (const message of messages) {
     if (message.role !== "user" && message.role !== "toolResult") continue;
-    if (typeof message.content === "string") continue;
-    for (const content of message.content) {
-      if (content.type === "image") images.push(content);
+    for (const content of normalizeContent(message.content)) {
+      if (
+        content && typeof content === "object" &&
+        "type" in content && content.type === "image" &&
+        "mimeType" in content && typeof content.mimeType === "string" &&
+        "data" in content && typeof content.data === "string"
+      ) images.push(content as ImageContent);
     }
   }
   return images;
@@ -634,14 +650,20 @@ function serializeMessage(message: Message): string {
     ].join("\n");
   }
 
-  const parts = message.content.map(
-    (part: TextContent | ToolCall | { type: "thinking"; thinking: string }) => {
-      if (part.type === "text") return part.text;
-      if (part.type === "thinking")
-        return `<thinking>${part.thinking}</thinking>`;
-      return `<pi_tool_call>${safeJson({ id: part.id, name: part.name, arguments: part.arguments })}</pi_tool_call>`;
-    },
-  );
+  const parts = normalizeContent(message.content).flatMap((part) => {
+    if (!part || typeof part !== "object" || !("type" in part)) return [];
+    if (part.type === "text" && "text" in part && typeof part.text === "string")
+      return [part.text];
+    if (
+      part.type === "thinking" && "thinking" in part &&
+      typeof part.thinking === "string"
+    ) return [`<thinking>${part.thinking}</thinking>`];
+    if (part.type === "toolCall") {
+      const call = part as ToolCall;
+      return [`<pi_tool_call>${safeJson({ id: call.id, name: call.name, arguments: call.arguments })}</pi_tool_call>`];
+    }
+    return [];
+  });
   return `ASSISTANT:\n${parts.join("\n")}`;
 }
 

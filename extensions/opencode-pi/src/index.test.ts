@@ -294,6 +294,19 @@ test("imageContentsForModel omits historical images for text-only models", () =>
   assert.deepEqual(imageContentsForModel(messages, true), [historicalImage]);
 });
 
+test("imageContentsForModel ignores malformed content and keeps valid image blocks", () => {
+  const image = { type: "image" as const, mimeType: "image/png", data: "AAAA" };
+  const contents: unknown[] = [null, undefined, "plain text", { type: "image", mimeType: "image/png", data: "AAAA" }, 42, [null, image, { type: "image" }]];
+  const messages = contents.map((content, index) => ({
+    role: "user" as const,
+    content,
+    timestamp: index,
+  })) as unknown as Message[];
+
+  assert.deepEqual(imageContentsForModel(messages, true), [image]);
+  assert.deepEqual(imageContentsForModel(messages, false), []);
+});
+
 test("parseVerboseModels skips malformed metadata and uses safe defaults", () => {
   const output = `opencode/broken-free
 {not json}
@@ -1577,6 +1590,38 @@ function conversationContext(): Context {
     ],
   };
 }
+
+test("streamOpenCode serializes malformed history content without crashing", async () => {
+  const captureDir = mkdtempSync(join(tmpdir(), "opencode-pi-capture-"));
+  const capturePath = join(captureDir, "invocations.jsonl");
+  const messages = [
+    { role: "user", content: null, timestamp: 1 },
+    { role: "user", content: "user text", timestamp: 2 },
+    { role: "user", content: { type: "text", text: "ignored object" }, timestamp: 3 },
+    { role: "user", content: [{ type: "text", text: "array text" }, null, { type: "image", mimeType: "image/png", data: "AAAA" }], timestamp: 4 },
+    { role: "toolResult", toolName: "read", toolCallId: "1", isError: false, content: undefined, timestamp: 5 },
+    { role: "toolResult", toolName: "read", toolCallId: "2", isError: false, content: 42, timestamp: 6 },
+    { role: "assistant", content: null, timestamp: 7 },
+    { role: "assistant", content: "assistant text", timestamp: 8 },
+    { role: "assistant", content: { type: "text", text: "ignored assistant object" }, timestamp: 9 },
+    { role: "assistant", content: [{ type: "text", text: "assistant block" }, { type: "thinking", thinking: "reason" }, { type: "toolCall", id: "1", name: "read", arguments: { path: "file" } }, null], timestamp: 10 },
+  ] as unknown as Message[];
+  try {
+    const result = await withFakeOpenCode(
+      sessionFakeScript(capturePath, "ses-malformed"),
+      () => streamOpenCode(fakeModel(), { messages }).result(),
+    );
+    assert.equal(result.stopReason, "stop");
+    const prompt = readInvocations(capturePath)[0]?.stdin ?? "";
+    assert.match(prompt, /USER:\nuser text/);
+    assert.match(prompt, /USER:\narray text\n\[image in conversation: image\/png, 4 base64 chars\]/);
+    assert.match(prompt, /ASSISTANT:\nassistant text/);
+    assert.match(prompt, /assistant block\n<thinking>reason<\/thinking>\n<pi_tool_call>/);
+    assert.doesNotMatch(prompt, /ignored object|ignored assistant object/);
+  } finally {
+    rmSync(captureDir, { recursive: true, force: true });
+  }
+});
 
 test("streamOpenCode reuses the session and sends only the transcript delta", async () => {
   const captureDir = mkdtempSync(join(tmpdir(), "opencode-pi-capture-"));
